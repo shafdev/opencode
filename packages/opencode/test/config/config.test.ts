@@ -23,6 +23,8 @@ import { ProjectID } from "../../src/project/schema"
 import { Filesystem } from "../../src/util/filesystem"
 import * as Network from "../../src/util/network"
 import { Npm } from "../../src/npm"
+import { Bus } from "../../src/bus"
+import { Session } from "../../src/session"
 
 const emptyAccount = Layer.mock(Account.Service)({
   active: () => Effect.succeed(Option.none()),
@@ -2380,4 +2382,55 @@ test("parseManagedPlist handles empty config", async () => {
     "test:mobileconfig",
   )
   expect(config.$schema).toBe("https://opencode.ai/config.json")
+})
+
+test("surfaces error event when mode file has invalid frontmatter schema", async () => {
+  await using tmp = await tmpdir({
+    init: async (dir) => {
+      const modesDir = path.join(dir, ".opencode", "modes")
+      await fs.mkdir(modesDir, { recursive: true })
+
+      // Valid mode — model is a string, temperature is a number
+      await Filesystem.write(
+        path.join(modesDir, "validmode.md"),
+        `---
+model: test/model
+---
+Valid mode prompt`,
+      )
+
+      // Invalid mode — temperature must be a number, not a string
+      await Filesystem.write(
+        path.join(modesDir, "badmode.md"),
+        `---
+temperature: "not-a-number"
+---
+Bad mode prompt`,
+      )
+    },
+  })
+
+  const spy = spyOn(Bus, "publish")
+
+  await Instance.provide({
+    directory: tmp.path,
+    fn: async () => {
+      const config = await Config.get()
+
+      // Valid mode should be loaded
+      expect(config.agent?.["validmode"]).toBeDefined()
+
+      // Invalid mode should be skipped (not crash, not silently included)
+      expect(config.agent?.["badmode"]).toBeUndefined()
+    },
+  })
+
+  // An error event should have been published for the invalid mode
+  const errorCalls = spy.mock.calls.filter(([def]) => def === Session.Event.Error)
+  expect(errorCalls.length).toBeGreaterThan(0)
+
+  const errorProps = errorCalls[0][1] as { error: { data: { message: string } } }
+  expect(errorProps.error.data.message).toContain("badmode")
+
+  spy.mockRestore()
 })

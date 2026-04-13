@@ -268,6 +268,10 @@ export namespace Config {
         }
         continue
       }
+      const message = `Failed to load mode ${config.name}: ${parsed.error.issues.map((i) => i.message).join(", ")}`
+      const { Session } = await import("@/session")
+      Bus.publish(Session.Event.Error, { error: new NamedError.Unknown({ message }).toObject() })
+      log.error("failed to load mode", { mode: item, issues: parsed.error.issues })
     }
     return result
   }
